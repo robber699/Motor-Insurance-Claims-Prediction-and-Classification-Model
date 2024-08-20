@@ -1,0 +1,862 @@
+---
+title: "Assignment 2 - Machine Learning Methods and Data Analytics"
+author: "Roberto Carminati"
+date: "2024-07-10"
+output: html_document
+---
+
+```{r}
+load("C:/Users/Admin/Desktop/assignmet_ML_insurance/2/final_env.RData")
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(readr)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(gbm)
+library(caret)
+library(corrplot)
+```
+
+```{r}
+set.seed(10)
+```
+
+```{r}
+data<- read_csv("C:/Users/Admin/Desktop/assignmet_ML_insurance/2/A2_Dataset14.csv")
+data$Counts <- as.integer(data$Counts)
+```
+After importing the data, we check the type of the variables. We note that there are no missing values in the data and that there are no variables highly correlated.
+
+
+```{r}
+head(data)
+str(data)
+data$sex<-as.factor(data$sex)
+n<-nrow(data)
+anyNA(data)
+cor(data[-2])
+table(data$Counts)
+corrplot(cor(data[-2]))
+```
+We plot the histograms all all the numeric variables (excluding sex). Our response variable Counts seems not to far from a Poisson distribution with a lot of $0$s.
+
+```{r}
+par(mfrow=c(3,2))
+hist(data$Counts)
+hist(data$distance)
+hist(data$weight)
+hist(data$age)
+hist(data$carage)
+hist(data$exposure)
+```
+
+#### a. Estimating $\lambda(x)$ with a Generalized Linear Model
+
+We fit a Poisson Generalized Linear Model for the estimation of  $\lambda(x)$ considering linear, quadratic and mixed terms:
+
+\begin{align*}
+\log(\lambda) = & \ \beta_0 + \beta_1 \text{weight} + \beta_2 \text{distance} + \beta_3 \text{age} + \beta_4 \text{carage} + \beta_5 \text{sex} \\
+    & + \beta_6 \text{weight}^2 + \beta_7 \text{distance}^2 + \beta_8 \text{age}^2 + \beta_9 \text{carage}^2 \\
+    & + \beta_{10} (\text{weight} \cdot \text{distance}) + \beta_{11} (\text{weight} \cdot \text{age}) + \beta_{12} (\text{weight} \cdot \text{carage}) \\
+    & + \beta_{13} (\text{distance} \cdot \text{age}) + \beta_{14} (\text{distance} \cdot \text{carage}) + \beta_{15} (\text{age} \cdot \text{carage}) \\
+    & + \log(\text{exposure})
+\end{align*}
+
+```{r}
+model_glm<-glm(Counts~distance+weight+sex+carage+age +I(age^2)+I(distance^2)+
+                I(weight^2)+I(carage^2)+I(age^2)+distance*weight+age*carage+
+                distance*age+ age*weight+ distance*carage+carage*weight, data=data,
+                family=poisson(), offset=log(exposure),weights = NULL)
+summary(model_glm)
+round(model_glm$coefficients, 6)
+```
+
+Form the summary we see that the mixed terms are not significant, the linear term are all extremely significant. Looking at the quadratic terms, $\text{age}^2$ is extremely significant,  $\text{weight}^2$ just at level $5%$, while $\text{distance}^2$ and $\text{carage}^2$ are not significant.
+
+```{r setup, include=FALSE, eval = FALSE}
+backward_model<- step(model_glm, direction = "backward", k = log(n))
+```
+
+```{r , eval = FALSE}
+summary(backward_model)
+```
+
+We also performed a backwards selection with BIC criterion to penalize more the coefficients. Following this approach we decide to remove also $\text{weight}^2$, which was not bringing a big improvement even in deviance.
+
+So we compute again our final GLM model and we plot our final coefficients.
+
+\begin{align*}
+\log(\lambda) = & \ \beta_0 + \beta_1 \text{weight} + \beta_2 \text{distance} + \beta_3 \text{age} + \beta_4 \text{carage} + \beta_5 \text{sex} \\
+    &  \beta_6 \text{age}^2 + \log(\text{exposure})
+\end{align*}
+
+```{r}
+model_glm<-glm(Counts~distance+weight+sex+carage+age +I(age^2), data=data, 
+               family=poisson(), offset=log(exposure),
+               weights = NULL)
+summary(model_glm)
+```
+
+```{r}
+round(model_glm$coefficients, 6)
+```
+We check the Pearson dispersion to check if our Poisson assumption on the response variable Counts and we confirm that our assumption is good because the coefficients is close to $1$.
+
+```{r}
+Pearson.dispersion <- (sum((data$Counts-fitted(model_glm))^2/fitted(model_glm)))/
+                                                (n-length(model_glm$coefficients))
+Pearson.dispersion
+```
+As a benchmark, we report the estimate $λ(x)$ for Weight = 1000, Distance = 10,
+Age = 27, CarAge = 5, Sex = male.
+
+```{r}
+newdata <- data.frame(distance = 1000, weight = 10, sex = "male", carage = 5, 
+                                                          age = 27, exposure = 1)
+lambda_x_glm <- predict(model_glm, newdata, offset = log(newdata$exposure), 
+                                                                  type="response")
+#λ=v*exp(linear_predictor)
+print(lambda_x_glm)
+```
+
+
+And we plot $λ(x)$ versus Age when other predictors are Weight = 1000, Distance = 10,
+Age = 27, CarAge = 5, Sex = male.
+
+
+```{r}
+age_values <- seq(min(data$age), max(data$age), length.out = 100)
+plot_data_glm <- data.frame(distance = 1000, weight = 10, sex = "male", carage = 5,
+                                                    age = age_values, exposure = 1)
+lambda_x_plot_glm <- predict(model_glm, plot_data_glm, type = "response", 
+                                              offset = log(plot_data$exposure))
+plot_data_glm$lambda_x <- lambda_x_plot_glm
+
+ggplot(plot_data_glm, aes(x = age, y = lambda_x)) +
+  geom_line(color = "Black") +
+  labs(x = "Age", y = expression(lambda(x)), 
+       title = expression(lambda(x) ~ " vs Age")) +
+  theme_minimal()
+```
+
+#### b. Estimate $\lambda(x)$ using Poisson regression tree
+
+Now we want to estimate lambda using Poisson regression tree model.
+
+
+```{r}
+tree_mod <- rpart(cbind(exposure,Counts) ~ weight + distance + carage + age,
+                            data = data,
+                            method = "poisson",
+                            parms = list(shrink=1),
+                            control = rpart.control(xval=1,
+                                      minbucket=8000,cp=0.0000001, maxdepth=8))
+
+summary(tree_mod) 
+```
+
+```{r}
+rpart.plot(tree_mod)
+```
+
+Now we find the optimal value of "cp", the complexity parameter, using a $10$-fold cross validation.
+We plot the relative error from cross validation versus the logarithm of the complexity parameter.
+
+```{r}
+tree_cv <- rpart(cbind(exposure,Counts)~weight+distance+carage+age,
+                            data=data,
+                            method="poisson",
+                            parms=list(shrink=1),
+                            control = rpart.control(xval=10,
+                                         minbucket=8000,cp=0.0000001,maxdepth=8))
+```
+
+
+```{r}
+plot(log(tree_cv$cp[,1]), tree_cv$cp[,4],
+     ylim=range(c(tree_cv$cp[,4]-tree_cv$cp[,5], tree_cv$cp[,4]+tree_cv$cp[,5])),
+     pch=19, xlab="log(cp)", ylab="CV error",
+     main=" ", xlim=rev(range(log(tree_cv$cp[,1]))))
+
+# draw arrows but with very special "arrowheads"
+arrows(log(tree_cv$cp[,1]), tree_cv$cp[,4]-tree_cv$cp[,5], log(tree_cv$cp[,1]), 
+       tree_cv$cp[,4]+tree_cv$cp[,5], length=0.05, angle=90, code=3)
+```
+
+Now we found the optimal value of the complexity parameter using a function. This function first find the minimum "cp" and then according to the one-standard error rule, finds the first smallest tree with CV error just below the standard error limit.
+
+```{r}
+cp.select <- function(tree){
+  min.x <- which.min(tree$cp[, 4])
+  for(i in 1:nrow(tree$cp)){
+    if(tree$cp[i, 4] < tree$cp[min.x, 4] 
+       + tree$cp[min.x, 5]){
+      return(tree$cp[i, 1])
+    }
+  }
+}
+cp.optimal<-cp.select(tree_cv)
+cp.optimal
+```
+Using the optimal complexity parameter, without approximation to not occur into errors we prun our tree obtaining our final model.
+```{r}
+tree_cv_pruned <- prune(tree_cv, cp=cp.optimal)
+rpart.plot(tree_cv_pruned)
+```
+
+```{r}
+tree_cv_pruned
+```
+As before, we use the model to predict $λ(x)$ for Weight = 1000, Distance = 10,
+Age = 27, CarAge = 5, Sex = male.
+
+```{r}
+log_lambda_x_tree <- predict(tree_cv_pruned, newdata)
+
+lambda_x_tree <- newdata$exposure * exp(log_lambda_x_tree)
+print(lambda_x_tree)
+```
+And we plot $λ(x)$ versus Age when other predictors are Weight = 1000, Distance = 10,
+Age = 27, CarAge = 5, Sex = male.
+We obtained a step graph as expected from the calculation of the Poisson regression trees.
+
+```{r}
+plot_data_tree<- data.frame(distance = 1000, weight = 10, sex = "male", carage = 5,
+                                                     age = age_values, exposure = 1)
+lambda_x_plot_tree <- exp(predict(tree_cv_pruned, plot_data_tree))
+plot_data_tree <- data.frame(age = age_values, lambda_x = lambda_x_plot_tree)
+ggplot(plot_data_tree, aes(x = age, y = lambda_x)) +
+  geom_line(color = "black", size = 1.2) +
+  labs(x = "Age", y = expression(lambda(x)), 
+       title = expression(lambda(x) ~ " vs Age")) +
+  theme_minimal()
+```
+
+#### c. Estimate $\lambda(x)$ using Poisson boosting tree method with no base model
+
+Now we split the data in training and test set to tune the parameter when using using Poisson boosting tree method. 
+We train a model on training set with $40$ number of trees, $0.5$ as shrinkage parameters and
+the tree depth as $2$.
+```{r}
+trainsampleindex <- sample(c(1:nrow(data)), 0.8 * nrow(data), replace = FALSE)
+train <- data[trainsampleindex,]
+test <- data[-trainsampleindex,]
+
+boost_no_base <- gbm(Counts ~ offset(log(exposure)) + weight + distance + age +
+                            carage + sex, data = train, distribution = "poisson", 
+                            n.trees = 40, shrinkage = 0.5, interaction.depth = 2)
+```
+
+We plot how the out of sample error develop with different number of trees (from $1$ to $40$). after we look for the minimum error and the corresponding optimal number of trees.
+
+```{r}
+out_sample_error_no_base <- vector()
+K = 40
+for(k in 1:K) {
+  test$fit <- test$exposure * suppressWarnings(predict(boost_no_base, 
+                                 newdata = test, n.trees = k, type = "response"))
+  out_sample_error_no_base[k] <- 2 * (sum(log((test$Counts / test$fit)^test$Counts))-
+                                        sum(test$Counts) + sum(test$fit)) / nrow(test)
+}
+plot(seq(1:K), out_sample_error_no_base, xlab = "Iteration", 
+                                     ylab = "Out-of-sample Error (No Base Model)")
+which.min(out_sample_error_no_base)
+out_sample_error_no_base[which.min(out_sample_error_no_base)]
+```
+
+Now, after this quick previous trial, we want to tune more our model. We use a grid search with "shrinkage" $= [0.3, 0.5, 0.7]$ and "interaction.depth" $=[2,4]$. We compute the validation error $5$ times for each combination of parameters and we save the optimal number of trees.
+Looking at the average out of sample error we find the optimal parameters and the corresponding average numbers of trees. 
+
+
+```{r , eval = FALSE}
+param_combinations <- expand.grid(
+  shrinkage = c(0.5, 0.7, 0.3),
+  interaction.depth = c(2, 4)
+)
+
+# Initialize lists to store results
+results <- list()
+
+# Number of repetitions for each parameter combination
+n_repeats <- 5
+
+# Loop through each parameter combination
+for (i in 1:nrow(param_combinations)) {
+  shrinkage <- param_combinations$shrinkage[i]
+  interaction.depth <- param_combinations$interaction.depth[i]
+  
+  errors <- numeric(n_repeats)
+  n_trees_optimal <- numeric(n_repeats)
+  
+  # Repeat the model fitting and error calculation n_repeats times
+  for (j in 1:n_repeats) {
+    # Fit the gbm model
+    boost_no_base<-gbm(Counts ~ offset(log(exposure))+weight+distance+age+carage+sex,
+                         data = train,
+                         distribution = "poisson",
+                         n.trees = 40,
+                         shrinkage = shrinkage,
+                         interaction.depth = interaction.depth)
+    
+    # Out-of-sample error analysis
+    out_sample_error_no_base <- numeric(40)
+    K <- 40
+    for (k in 1:K) {
+      test$fit <- test$exposure * suppressWarnings(predict(boost_no_base, 
+                                  newdata = test, n.trees = k, type = "response"))
+      out_sample_error_no_base[k] <- 2 * (sum(log((test$Counts / test$fit)^test$Counts))-
+                                          sum(test$Counts) + sum(test$fit)) / nrow(test)
+    }
+  # Store the error and optimal number of trees for this repeat
+  errors[j] <- min(out_sample_error_no_base)
+  n_trees_optimal[j] <- which.min(out_sample_error_no_base)
+  }
+  
+  # Calculate the mean error and mean optimal number of trees
+  mean_error <- mean(errors)
+  mean_n_trees_optimal <- mean(n_trees_optimal)
+  
+  # Store the results
+  results[[paste("shrinkage", shrinkage, "depth", interaction.depth)]] <- list(
+    mean_error = mean_error,
+    mean_n_trees_optimal = mean_n_trees_optimal)
+}
+```
+
+```{r}
+results
+```
+
+The minimum average error we found is $0.4076747$ with an average number of trees of $33.6$
+Now we compute the boosting tree model with no base with the optimal parameters we found : "shrinkage" $=0.3$ and "interaction.depth" $=2$. We compute first with $50$ trees to check again the optimal number of trees.
+
+```{r}
+boost_no_base_tuned<- gbm(Counts~offset(log(exposure))+weight+distance+age+carage+sex,
+                          data = train,
+                          distribution = "poisson",
+                          n.trees = 50,
+                          shrinkage = 0.3,
+                          interaction.depth = 2)
+```
+
+```{r}
+out_sample_error_no_base_tuned <- vector()
+K = 50
+for(k in 1:K) {
+  test$fit <- test$exposure * suppressWarnings(predict(boost_no_base_tuned, newdata=test, 
+                                                      n.trees = k, type = "response"))
+  out_sample_error_no_base_tuned[k] <- 2 * (sum(log((test$Counts / test$fit)^test$Counts))-
+                                              sum(test$Counts) + sum(test$fit)) / nrow(test)
+}
+plot(seq(1:K), out_sample_error_no_base_tuned, xlab = "Iteration", 
+                                    ylab = "Out-of-sample Error (No Base Model)")
+which.min(out_sample_error_no_base_tuned)
+out_sample_error_no_base_tuned[which.min(out_sample_error_no_base_tuned)]
+```
+
+We compute again our model with the number of trees which minimize the out of sample error ($0.4076$) : "n.trees" $=37$.
+
+```{r}
+boost_no_base_tuned<- gbm(Counts ~ offset(log(exposure))+weight+distance+age+carage+sex,
+                          data = data,
+                          distribution = "poisson",
+                          n.trees = 37,
+                          shrinkage = 0.3,
+                          interaction.depth = 2)
+```
+
+We use  now the model to predict $λ(x)$ for Weight $= 1000$, Distance $= 10$,
+Age $= 27$, CarAge $= 5$, Sex $= male$.
+The predict values of $λ$ is $0.06851$.
+
+```{r message=FALSE, warning=FALSE}
+#newdata <- data.frame(distance = 1000, weight = 10, sex = "male", carage = 5, 
+#                                                         age = 27, exposure = 1)
+lambda_x_boost <- predict(boost_no_base_tuned, newdata, n.trees = 37, 
+                                                               type = "response")
+
+lambda_x_boost
+
+```
+We plot $λ(x)$ versus Age when other predictors are Weight $= 1000$, Distance $= 10$,
+Age $= 27$, CarAge $= 5$, Sex = male.
+We obtained a step graph with more steps than before as expected from the calculation of the Poisson regression trees with boosting.
+
+```{r}
+#age_values <- seq(min(data$age), max(data$age), length.out = 100)
+plot_data_boost <- data.frame(distance = 1000, weight = 10, sex = "male", 
+                                     carage = 5, age = age_values, exposure = 1)
+plot_data_boost$lambda_x <- predict(boost_no_base_tuned, newdata = plot_data_boost,
+                                                    n.trees = 30, type = "response")
+ggplot(plot_data_boost, aes(x = age, y = lambda_x)) +
+  geom_line(color = "black", size = 1) +
+  labs(x = "Age", y = expression(lambda(x)), title = expression(lambda(x) ~" vs Age"))+
+  theme_minimal()
+```
+
+#### d Estimate $\lambda(x)$ Poisson boosting tree method with base model
+
+As at the point c., we want to estimate $\lambda(x)$, but this time with Poisson boosting tree model with base model (GLM model fitted in section a.). We start directly with our grid search for the optimal parameters "shrinkage" $= [0.3, 0.5, 0.7]$ and "interaction.depth" $=[2,4]$. with each combination of parameters we compute 5 times the model on train data and validation error on the test data to have a more robust result when applying boosting.
+```{r}
+test<-test[,-8]
+
+train$base_pred <- predict(model_glm, newdata = train, type = "response")
+test$base_pred <- predict(model_glm, newdata = test, type = "response")
+```
+
+```{r, eval = FALSE}
+library(gbm)
+
+param_combinations <- expand.grid(
+  shrinkage = c(0.5, 0.7, 0.3),
+  interaction.depth = c(2, 4)
+)
+
+
+results_with_base <- list()
+
+#Number of repetitions
+n_repeats <- 5
+
+for (i in 1:nrow(param_combinations)) {
+  shrinkage <- param_combinations$shrinkage[i]
+  interaction.depth <- param_combinations$interaction.depth[i]
+  
+  errors_with_base <- numeric(n_repeats)
+  n_trees_optimal_with_base <- numeric(n_repeats)
+  
+ 
+  for (j in 1:n_repeats) {
+    boost_with_base <- gbm(Counts ~ offset(base_pred) + weight + distance + age + carage + sex,
+                           data = train,
+                           distribution = "poisson",
+                           n.trees = 40,
+                           shrinkage = shrinkage,
+                           interaction.depth = interaction.depth)
+    
+    # Out-of-sample error 
+    out_sample_error_with_base <- numeric(40)
+    K <- 40
+    for (k in 1:K) {
+      test$fit <- test$exposure*suppressWarnings(predict(boost_with_base, 
+                                  newdata = test, n.trees = k, type = "response"))
+      out_sample_error_with_base[k]<-2*(sum(log((test$Counts/test$fit)^test$Counts))-
+                                    sum(test$Counts) + sum(test$fit)) / nrow(test)
+    }
+    
+    # Store the error and optimal number of trees 
+    errors_with_base[j] <- min(out_sample_error_with_base)
+    n_trees_optimal_with_base[j] <- which.min(out_sample_error_with_base)
+  }
+  
+  # Calculate the mean error and mean 
+  mean_error_with_base <- mean(errors_with_base)
+  mean_n_trees_optimal_with_base <- mean(n_trees_optimal_with_base)
+  
+  results_with_base[[paste("shrinkage", shrinkage, "depth", interaction.depth)]]<-list(
+    mean_error = mean_error_with_base,
+    mean_n_trees_optimal = mean_n_trees_optimal_with_base
+  )
+}
+```
+
+```{r}
+results_with_base
+```
+
+We found as a best parameter "shrinkage" $= 0.7$ and "interaction.depth" $ =2 $ corresponding to the minimum average validation error of $0.4099607$ and an average number of trees of $21$ .
+In the following code, we compute the Poisson boosting tree model with base model using the optimal "shrinkage" and "interaction.depth" on 50 trees to find the optimal number of trees.
+(optimal n.trees $= 23 $, out of sample error $= 0.41025$)
+
+```{r}
+boost_base_tuned<- gbm(Counts~offset(base_pred) +weight+distance+age+carage+sex,
+                          data = train,
+                          distribution = "poisson",
+                          n.trees = 50,
+                          shrinkage = 0.3,
+                          interaction.depth = 2)
+```
+
+```{r}
+out_sample_error_base_tuned <- vector()
+K = 50
+for(k in 1:K) {
+  test$fit <- test$exposure * suppressWarnings(predict(boost_base_tuned, 
+                                newdata = test, n.trees = k, type = "response"))
+  out_sample_error_base_tuned[k]<- 2*(sum(log((test$Counts / test$fit)^test$Counts))-
+                                       sum(test$Counts) + sum(test$fit)) / nrow(test)
+}
+plot(seq(1:K), out_sample_error_base_tuned, xlab = "Iteration", 
+                                      ylab = "Out-of-sample Error with Base Model")
+which.min(out_sample_error_base_tuned)
+out_sample_error_base_tuned[which.min(out_sample_error_base_tuned)]
+```
+
+We use  now the model to predict $λ(x)$ for Weight $= 1000$, Distance $= 10$,
+Age $= 27$, CarAge $= 5$, Sex $= male$.
+The predict values of $λ$ is $0.079764$.
+
+```{r}
+#newdata <- data.frame(distance = 1000, weight = 10, sex = "male", carage = 5, 
+#                                                        age = 27, exposure = 1)
+lambda_x_boost_with_base<- predict(boost_base_tuned, newdata, n.trees = 23, 
+                                        type = "response")
+lambda_x_boost_with_base
+```
+
+We plot $λ(x)$ versus Age when other predictors are Weight $= 1000$, Distance $= 10$,
+Age $= 27$, CarAge $= 5$, Sex = male.
+We obtained a step graph with more steps than before as expected from the calculation of the Poisson regression trees with boosting using as base model the GLM computed previously.
+
+```{r}
+#age_values <- seq(min(data$age), max(data$age), length.out = 100)
+plot_data_boost_with_base <- data.frame(distance = 1000, weight = 10, sex = "male", 
+                                         carage = 5, age = age_values, exposure = 1)
+plot_data_boost_with_base$lambda_x <- predict(boost_base_tuned, 
+                newdata = plot_data_boost_with_base, n.trees = 31, type = "response")
+ggplot(plot_data_boost_with_base, aes(x = age, y = lambda_x)) +
+  geom_line(color = "black", size = 1) +
+  labs(x = "Age", y = expression(lambda(x)), title = expression(lambda(x) ~ 
+                                                                   " vs Age")) +
+  theme_minimal()
+```
+
+
+#### e. Estimate $\lambda(x)$ modelled by a one-layer Neural Network
+
+```{r}
+library(reticulate)
+#py_discover_config()
+
+use_condaenv("r-reticulate", conda = "C:/ProgramData/anaconda3/condabin/conda.bat")
+
+py_discover_config()
+
+
+library(tensorflow)
+library(keras)
+
+
+# Install specific version of TensorFlow if needed
+tensorflow::tf_config()
+keras:::keras_version()  
+```
+
+
+Now we estimate $\lambda(x)$ modelled by a one-layer Neural Network model with 10 neurons using tensorflow. The exposure is considered as a given factor. We use only $2$ integer covariates Age and Distance.
+We make our response variable as numeric, we save the 2 variables, that we are considering in a matrix and we normalize them.
+
+```{r}
+Y_train <- as.matrix(train$Counts)
+Y_test <- as.matrix(test$Counts)
+
+Y_train <- as.numeric(Y_train)
+Y_test <- as.numeric(Y_test)
+
+str(Y_train)
+str(Y_test)
+
+#Max-Min Normalization
+normalize <- function(x,xmin,xmax) {
+  return (2*((x - xmin) / (xmax - xmin))-1)
+}
+
+agemin<-min(data$age)
+agemax<-max(data$age)
+dmin<-min(data$distance)
+dmax<-max(data$distance)
+
+feature.train<-cbind(normalize(train$age,agemin,agemax),normalize(train$distance,dmin,dmax))
+X.train <- list(as.matrix(feature.train), as.matrix((train$exposure)))
+
+feature.test<-cbind(normalize(test$age,agemin,agemax),normalize(test$distance,dmin,dmax))
+X.test <- list(as.matrix(feature.test), as.matrix((test$exposure)))  
+```
+
+Here we set our number of neurons (10) and layers (1) and we define our model architecture.
+We also define our poisson loss function.
+
+```{r}
+q0<-2 #number of covariates
+q1<-10 #number of neurons
+lambda0<-sum(train$Counts)/sum(train$exposure)
+
+Design<-layer_input(shape = c(q0), dtype = 'float32', name = 'Design')
+Vol<-layer_input(shape = c(1), dtype = 'float32', name = 'LogVol')
+
+Network = Design %>%
+  layer_dense (units=q1 , activation ='tanh', name ='Layer1') %>%
+  layer_dense (units=1, activation ='exponential', name ='Network',
+               weights = list(array(0, dim=c(q1 ,1)) , array(log(lambda0), dim=c(1))))
+
+Response = list(Network,Vol) %>% layer_multiply
+
+#the package drops some terms in loss function loss = 'poisson' that do not depend on y_pred. Thus training and validation error curves are shifted on the plot. Thus we write custom loss function 
+Poisson_loss<-function(y_true,y_pred){
+  2*k_mean(y_pred - y_true*k_log(y_pred)-y_true+y_true*k_log(k_maximum(y_true,1)))
+}
+
+model <- keras_model(inputs = list(Design,Vol), outputs = c(Response))
+
+model %>% compile(optimizer=optimizer_nadam(), loss=Poisson_loss) #loss = 'poisson') 
+
+summary(model)
+```
+
+Finally we fit our model on our training data on 50 epochs and we plot the evolution of training loss and validation loss.
+20 epochs here seems enough to make the error stabilize. 
+
+```{r, eval = FALSE}
+history <- model %>% fit(X.train, Y_train, 
+                         epochs=70, batch_size = nrow(X.train),view_metrics = TRUE, 
+                         #validation_split = 0.2,
+                         validation_data = list(X.test, Y_test), 
+                         verbose =0)
+```
+
+```{r}
+plot(history)
+```
+
+
+
+Now we use the model to estimate of $\lambda(x) $for Weight = 1000 and Age = 27 obtaining $ 0.08607315 $.
+
+```{r}
+#new data point
+new_data_NN <- data.frame(distance = 10, age = 27)
+
+normalized_distance <- normalize(new_data_NN$distance, min(data$distance), max(data$distance))
+normalized_age <- normalize(new_data_NN$age, min(data$age), max(data$age))
+
+x_single <- list(as.matrix(cbind(normalized_age, normalized_distance)), as.matrix(1))
+
+lambda_NN <- model %>% predict(x_single)
+lambda_NN
+```
+
+
+We plot $λ(x)$ versus Age when  Weight = 1000.
+
+```{r}
+
+age_values <- seq(min(data$age), max(data$age), length.out = 100)
+mean_distance <- 10
+distance_value <- normalize(mean_distance, min(data$distance), max(data$distance))
+
+
+xplot <- list(as.matrix(cbind(normalize(age_values, min(data$age), max(data$age)),
+    rep(distance_value, length(age_values)))), as.matrix(rep(1, length(age_values))))
+NN.fit <- model %>% predict(xplot)
+plot_data <- data.frame(age = age_values, intensity = NN.fit)
+
+ggplot(plot_data, aes(x = age, y = intensity)) +
+  geom_line(size=1) +
+  labs(x = "Age", y = expression(lambda(x)), title = expression(lambda(x) ~ " vs Age"))
+```
+
+
+
+#### f. Compare the models fitted in items a), b), c), d) and e)
+
+We compare here the models fitted in items a), b), c), d) and e) using 10-fold cross
+validation error to select the best model.
+
+```{r, eval = FALSE}
+folds <- createFolds(data$Counts, k = 10, list = TRUE, returnTrain = TRUE)
+poisson_deviance <- function(observed, predicted) {
+  2 * (sum(log((observed/predicted)^observed))-sum(observed)+sum(predicted))/length(observed)
+}
+
+cross_validation_error <- function(data, folds) {
+  errors <- data.frame(
+    Model_a = numeric(length(folds)),
+    Model_b = numeric(length(folds)),
+    Model_c = numeric(length(folds)),
+    Model_d = numeric(length(folds)))#,
+    #Model_e = numeric(length(folds))
+  #)
+  
+  for (i in seq_along(folds)) {
+    train_indices <- folds[[i]]
+    test_indices <- setdiff(seq_len(nrow(data)), train_indices)
+    train_data <- data[train_indices, ]
+    test_data <- data[test_indices, ]
+    
+    # Model a: Poisson regression with log link
+    model_a <- glm(Counts ~ offset(log(exposure)) + weight + distance + carage +
+                     age + sex+ I(age^2),
+                   data = train_data, family = poisson(link = "log"))
+    predicted_a <- predict(model_a, newdata = test_data, type = "response")
+    errors$Model_a[i] <- poisson_deviance(test_data$Counts, predicted_a)
+    
+    # Model b: Poisson regression tree
+    model_b <- rpart(cbind(exposure,Counts)~weight+distance+carage+age,
+                     data=train_data,
+                     method="poisson",
+                     parms=list(shrink=1),
+                     control = rpart.control(xval=10,
+                                        minbucket=8000,cp=cp.optimal,maxdepth=8))
+    predicted_b <- predict(model_b, newdata = test_data)
+    errors$Model_b[i] <- poisson_deviance(test_data$Counts, predicted_b)
+    
+    # Model c: Poisson boosting tree with no base model
+    model_c <- gbm(Counts ~ offset(log(exposure))+weight+distance+age+carage+sex,
+                   data = train_data,
+                   distribution = "poisson",
+                   n.trees = 37,
+                   shrinkage = 0.3,
+                   interaction.depth = 2)
+    predicted_c<-exp(predict(model_c, newdata = test_data, type = "link", n.tree=37)+
+                                                      log(test_data$exposure))
+    errors$Model_c[i]<-poisson_deviance(test_data$Counts, predicted_c)
+    
+    # Model d: Poisson boosting tree with the base model from a)
+    train_data$base_pred <- predict(model_a, newdata = train_data, type = "link")
+    test_data$base_pred <- predict(model_a, newdata = test_data, type = "link")
+    model_d <- gbm(Counts ~ offset(base_pred)+weight+distance+age+carage+sex,
+                                      data = train_data,
+                                      distribution = "poisson",
+                                      n.trees = 23,
+                                      shrinkage = 0.3,
+                                      interaction.depth = 2)
+    predicted_d<-exp(predict(model_d, newdata = test_data, type = "link", n.tree=23)+
+                                                           test_data$base_pred)
+    errors$Model_d[i]<-poisson_deviance(test_data$Counts, predicted_d)
+    
+    ########################################
+    #####NEURAL NETWORK
+    ########################################
+    # Prepare inputs for neural network training and prediction
+    Y_train <- as.matrix(train_data$Counts)
+    Y_test <- as.matrix(test_data$Counts)
+    Y_train <- as.numeric(Y_train)
+    Y_test <- as.numeric(Y_test)
+    
+    agemin <- min(data$age)
+    agemax <- max(data$age)
+    dmin <- min(data$distance)
+    dmax <- max(data$distance)
+    
+    feature_train <- cbind(normalize(train_data$age, agemin, agemax), 
+                                normalize(train_data$distance, dmin, dmax))
+    X_train <- list(as.matrix(feature_train), as.matrix(train_data$exposure))
+    
+    feature_test <- cbind(normalize(test_data$age, agemin, agemax), 
+                              normalize(test_data$distance, dmin, dmax))
+    X_test <- list(as.matrix(feature_test), as.matrix(test_data$exposure))
+    
+    q0 <- 2  # number of covariates
+    q1 <- 10  # number of neurons
+    lambda0 <- sum(train_data$Counts) / sum(train_data$exposure)
+    
+    Design <- layer_input(shape = c(q0), dtype = 'float32', name = 'Design')
+    Vol <- layer_input(shape = c(1), dtype = 'float32', name = 'LogVol')
+    
+    Network <- Design %>%
+      layer_dense(units = q1, activation = 'tanh', name = 'Layer1') %>%
+      layer_dense(units = 1, activation = 'exponential', name = 'Network',
+                  weights = list(array(0, dim = c(q1, 1)), array(log(lambda0), dim = c(1))))
+    
+    Response <- list(Network, Vol) %>% layer_multiply
+    
+    # Custom Poisson loss function
+    Poisson_loss <- function(y_true, y_pred) {
+      2 * k_mean(y_pred - y_true * k_log(y_pred) - y_true + y_true * k_log(k_maximum(y_true, 1)))
+    }
+    
+    model_nn <- keras_model(inputs = list(Design, Vol), outputs = c(Response))
+    model_nn %>% compile(optimizer = optimizer_nadam(), loss = Poisson_loss)
+    
+    # Train the neural network model
+    history <- model_nn %>% fit(X_train, Y_train,
+                                epochs = 20, batch_size = nrow(X_train), view_metrics = TRUE,
+                                validation_data = list(X_test, Y_test), verbose = 0)
+    
+    # Predict using the trained neural network model
+    predicted_e <- model_nn %>% predict(X_test)
+    #predicted_e <- exp(predicted_e)
+    
+    errors$Model_nn[i] <- poisson_deviance(test_data$Counts, predicted_e)
+    
+  }
+  colMeans(errors)
+}
+
+errors_compared<-cross_validation_error(data=data, folds=folds)
+```
+
+The Poisson regression tree model appears to be too simplistic, as indicated by its relatively higher validation error. Incorporating boosting improves the model's performance, as seen in the lower error of the Poisson boosting tree model without a base model. However, adding a base model to the boosting process does not lead to further improvements. The one-layer neural network model performs worse than the GLM and boosting models, but this result is reasonable given its simple architecture and the use of only two variables. A more complex neural network architecture might yield better results.
+The GLM shows us the better performance with a validation error of $0.4068$.
+
+```{r}
+errors_compared
+```
+
+
+
+#### g. Poisson Generalized Linear Model with variable "High"
+
+We continue the analysis by introducing a categorical variable, High, into the dataset. High is defined as "Yes" if the claims count of a policy \( N \geq 2 \), and "No" otherwise. Initially, we applied a logistic regression model using all available predictors, resulting in a residual deviance of $25648$.
+
+```{r}
+# Adding the High variable to the dataset
+data$high <- ifelse(data$Counts>= 2, "Yes", "No")
+data$High <- factor(data$high, levels = c("No", "Yes"))
+
+table(data$high)
+```
+
+After we selected the model by including only the significant predictors Weight, Age, CarAge, Sex, and $Age^2$ obtained a residual deviance of $25682$.
+
+```{r}
+# Fit the logistic regression model
+logistic_model <- glm(High ~ weight+distance+age+carage+sex+I(distance^2)+
+                   I(weight^2)+I(carage^2)+I(age^2)+distance*weight+age*carage+
+                   distance*age+ age*weight+ distance*carage+carage*weight, 
+                    data=data, family=binomial)
+summary(logistic_model)
+```
+
+After we selected the model by including only the significant predictors Weight, Age, CarAge, Sex, and $Age^2$ obtained a residual deviance of $25682$.
+
+```{r}
+# Fit the logistic regression model
+logistic_model <- glm(High~weight+age+carage+sex+I(age^2), data = data, family=binomial)
+summary(logistic_model)
+```
+
+For the covariate benchmark as described in section \ref{aaaa} (Weight = 1000, Distance = 10, Age = 27, CarAge = 5, Sex = male), we calculate the predicted probability of High being "Yes" obtaining $0.00289$.
+This probability is relatively low, which aligns with our data characterized by many zeros and ones.
+
+```{r}
+new_data <- data.frame(weight = 1000, distance = 10, age = 27, carage = 5, sex = "male")
+
+# Predict the probability
+predicted_prob <- predict(logistic_model, newdata = new_data, type = "response")
+print(predicted_prob)
+```
+
+Additionally, we plot the probability Pr[High = Yes] versus Age while holding other predictors constant at Weight = 1000, Distance = 10, CarAge = 5, and Sex = male.
+
+```{r}
+plot_data_binomial <- data.frame(weight = 1000, distance = 10, 
+                                     age = age_values, carage = 5, sex = "male")
+
+predicted_probs <- predict(logistic_model, newdata = plot_data_binomial, type="response")
+
+
+plot_data_binomial$predicted_prob <- predict(logistic_model, 
+                                      newdata=plot_data_binomial, type="response")
+
+ggplot(plot_data_binomial, aes(x = age, y = predicted_prob)) +
+  geom_line(color = "black", size = 1) +
+  labs(title = "Predicted Probability of High = Yes versus Age",
+       x = "Age", y = "Predicted Probability of High = Yes") +
+  theme_minimal()
+
+```
+
