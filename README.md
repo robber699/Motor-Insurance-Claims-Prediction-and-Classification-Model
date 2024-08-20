@@ -1,7 +1,7 @@
 # Motor Insurance Claims Prediction and Classification Model
 
 ## Overview
-This repository contains code and documentation for developing a predictive model for motor insurance claims. Using the dataset `A2 DatasetXX.csv`, the goal is to estimate the frequency of claims and classify high-risk policies based on various modeling techniques. The dataset includes features such as car weight, annual distance driven, driver age, car age, and driver gender, with the claims count following a Poisson distribution.
+This repository contains code and documentation for developing a predictive model for motor insurance claims. Using the dataset `A2 Dataset14.csv`, the goal is to estimate the frequency of claims and classify high-risk policies based on various modeling techniques. The dataset includes features such as car weight, annual distance driven, driver age, car age, and driver gender, with the claims count following a Poisson distribution.
 
 ## Tasks
 1. **Linear Model Estimation**
